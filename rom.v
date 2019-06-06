@@ -1,12 +1,15 @@
-module rom(input reg [63:0] address,
-           output [63:0] out,
+module rom(input [31:0] address,
+           output reg [31:0] out,
            input clk);
 
-    reg [63:0] mem [1023:0];
+    reg [31:0] mem [1023:0];
+    
+    initial 
+    $readmemh("rom.patt",mem);
 
-    always @(posedge clk)
+    always @ *
     begin
-        out <= mem[address];
+        out = mem[address >> 2];
     end
 
 endmodule

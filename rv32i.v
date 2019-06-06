@@ -88,6 +88,7 @@ module decoder(input [31:0]      insn,
                input [31:0]      pc,
                input [63:0]      cycle,
                input [63:0]      instret,
+               input [31:0]      regs [1:31],
 
                output [4:0]      rd,
                output reg        s1_is_imm,
@@ -98,7 +99,6 @@ module decoder(input [31:0]      insn,
                output reg [31:0] s2_imm,
                output reg [3:0]  op_alu,
                output reg        is_jump,
-               output reg        is_jump_reg,
                output reg        is_branch,
                output [31:0]     jump_target
                );
@@ -109,12 +109,15 @@ module decoder(input [31:0]      insn,
    wire [31:0]                   imm20  = {insn[31:12], 12'b0};
    wire [31:0]                   imm12b = {{20{insn[31]}}, insn[7], insn[30:25], insn[11:8], 1'b0};
    wire [31:0]                   imm20j = {{12{insn[31]}}, insn[19:12], insn[20], insn[30:21], 1'b0};
+   wire [31:0]                   imm11j = {{21{insn[31]}}, insn[30:20]};
    reg                           rd_write_disable;
+   reg                           is_jump_reg;
 
    assign rd = rd_write_disable ? 0 : insn[11:7];
    assign rs2 = insn[24:20];
    assign rs1 = insn[19:15];
-   assign jump_target = pc + (is_branch ? imm12b : imm20j);
+   // 下行内容参考JAL、JALR以及分支跳转的注释
+   assign jump_target = (is_jump_reg ? (regs[rs1] + imm11j) : (pc - 4 + (is_branch ? imm12b : imm20j)));
 
    always @ * begin
       rd_write_disable = 0;
@@ -174,11 +177,14 @@ module decoder(input [31:0]      insn,
         // 跳转并链接
         // 将 PC + 4 写入 rd
         // 后把 PC 设置为当前值加上符号位扩展的offset
+        ///////////////////////////////////////////
+        // 这里实在是很迷啊，按照这个流水线的写法
+        // 在译码的时候pc已经相对取值加4了
+        // 所以其实pc是不用加的
         `OPCODE_JAL: begin
            s1_is_imm = 1;
            s1_imm = pc;
            s2_is_imm = 1;
-           s2_imm = 4;
            is_jump = 1;
            is_jump_reg = 0;
         end
@@ -186,16 +192,14 @@ module decoder(input [31:0]      insn,
         // 寄存器跳转并链接
         // 将 PC + 4 写入 rd
         // 把 PC 设置为 x[rs1] 加上符号位扩展的offset，
-        // 把计算出的地址的最低有效位设为 0
+        // 把计算出的地址的最低有效位设为 0(草，我直接不要最低位不就好了)
         `OPCODE_JALR: begin
            s1_is_imm = 1;
            s1_imm = pc;
            s2_is_imm = 1;
-           s2_imm = 4;
            is_jump = 1;
            is_jump_reg = 1;
         end
-        // `OPCODE_JALR: TODO
         // 分支跳转
         `OPCODE_BRANCH: begin
            is_jump = 1;
@@ -257,7 +261,6 @@ module ezpipe (input         clk,
    reg [3:0]                 d_op_alu;
    reg [4:0]                 d_rd;
    reg                       d_is_jump;
-   reg                       d_is_jump_reg;
    reg                       d_is_branch;
    reg [31:0]                d_jump_target;
    reg                       d_valid;
@@ -265,7 +268,6 @@ module ezpipe (input         clk,
    reg [4:0]                 e_rd;
    reg [31:0]                e_d;
    reg                       e_is_jump;
-   reg                       e_is_jump_reg;
    reg                       e_is_branch;
    reg [31:0]                e_jump_target;
    reg                       e_valid;
@@ -280,13 +282,13 @@ module ezpipe (input         clk,
    wire                      dec_s2_is_imm;
    wire [3:0]                dec_op_alu;
    wire                      dec_is_jump;
-   wire                      dec_is_jump_reg;
    wire                      dec_is_branch;
    wire [31:0]               dec_jump_target;
    decoder dec(.pc(f_pc),
                .insn(f_insn),
                .cycle(cycle),
                .instret(instret),
+               .regs(regs),
                .op_alu(dec_op_alu),
                .rd(dec_rd),
                .rs1(dec_rs1),
@@ -296,7 +298,6 @@ module ezpipe (input         clk,
                .s2_is_imm(dec_s2_is_imm),
                .s2_imm(dec_s2_imm),
                .is_jump(dec_is_jump),
-               .is_jump_reg(dec_is_jump_reg),
                .is_branch(dec_is_branch),
                .jump_target(dec_jump_target)
                );
@@ -318,18 +319,25 @@ module ezpipe (input         clk,
       stall = 0;
       // 如果读写（读:rs1/rs2，写:rd）冲突，则阻塞流水线执行
       // 理论上来说，这是一个保险的策略，读写冲突的解决一般由编译器解决
-      if(d_valid && |d_rd) begin
-         if(|dec_rs1 && !dec_s1_is_imm && dec_rs1==d_rd)
-           stall = 1;
-         if(|dec_rs2 && !dec_s2_is_imm && dec_rs2==d_rd)
-           stall = 1;
-      end
-      if(e_valid && |e_rd) begin
-         if(|dec_rs1 && !dec_s1_is_imm && dec_rs1==e_rd)
-           stall = 1;
-         if(|dec_rs2 && !dec_s2_is_imm && dec_rs2==e_rd)
-           stall = 1;
-      end
+      // if(d_valid && |d_rd) begin
+      //    if(|dec_rs1 && !dec_s1_is_imm && dec_rs1==d_rd)
+      //      stall = 1;
+      //    if(|dec_rs2 && !dec_s2_is_imm && dec_rs2==d_rd)
+      //      stall = 1;
+      // end
+      // if(e_valid && |e_rd) begin
+      //    if(|dec_rs1 && !dec_s1_is_imm && dec_rs1==e_rd)
+      //      stall = 1;
+      //    if(|dec_rs2 && !dec_s2_is_imm && dec_rs2==e_rd)
+      //      stall = 1;
+      // end
+
+      // if (d_valid && dec_is_jump) begin
+      //    stall = 1;
+      // end
+      // if (e_valid && d_is_jump) begin
+      //    stall = 1;
+      // end
       // is there a taken branch/jump sitting in the e_* registers?
       // 默认清空跳转标识符
       jumping = 0;
@@ -384,7 +392,6 @@ module ezpipe (input         clk,
             d_jump_target <= dec_jump_target;
             d_is_branch <= dec_is_branch;
             d_is_jump <= dec_is_jump;
-            d_is_jump_reg <= dec_is_jump_reg;
             d_valid <= f_valid && !jumping;
          end else begin
             // can't issue this instruction yet; send a bubble down the pipeline
@@ -414,7 +421,6 @@ module ezpipe (input         clk,
             // 指令计数器+1
             instret <= instret + 1;
          end
-      end
       end
    end
 endmodule

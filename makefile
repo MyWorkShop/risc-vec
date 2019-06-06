@@ -11,3 +11,7 @@ mult: mult.v mult_tb.v
 	iverilog -o mult_test mult.v mult_fp32.v mult_fp64.v mult_tb.v
 	vvp mult_test -lxt2
 	gtkwave mult.vcd
+rv: rv32i.v rom.v tb.v
+	iverilog -o rv_test -g2012 rv32i.v rom.v tb.v
+	vvp rv_test -lxt2
+	gtkwave rv.vcd
