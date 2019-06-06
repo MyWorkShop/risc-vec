@@ -10,7 +10,7 @@ initial
 begin
     clk = 0;
     reset = 1;
-    #10
+    #4
     reset = 0;
     #100;
     $finish;

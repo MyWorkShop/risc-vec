@@ -313,10 +313,10 @@ module ezpipe (input         clk,
 
    /* the actual pipeline */
    reg                       jumping;
-   reg                       stall;
+   reg [1:0]                 stall;
    always @ * begin
       // does the decoded instruction depend on a instruction in the d_* or e_* registers?
-      stall = 0;
+      // stall = 0;
       // 如果读写（读:rs1/rs2，写:rd）冲突，则阻塞流水线执行
       // 理论上来说，这是一个保险的策略，读写冲突的解决一般由编译器解决
       // if(d_valid && |d_rd) begin
@@ -332,12 +332,6 @@ module ezpipe (input         clk,
       //      stall = 1;
       // end
 
-      // if (d_valid && dec_is_jump) begin
-      //    stall = 1;
-      // end
-      // if (e_valid && d_is_jump) begin
-      //    stall = 1;
-      // end
       // is there a taken branch/jump sitting in the e_* registers?
       // 默认清空跳转标识符
       jumping = 0;
@@ -360,6 +354,7 @@ module ezpipe (input         clk,
          e_valid <= 0;
          cycle <= 0;
          instret <= 0;
+         stall <=0;
       end else begin
          // 周期+1
          cycle <= cycle + 1;
@@ -371,16 +366,16 @@ module ezpipe (input         clk,
          // 跳转则暂停执行指令
          f_valid <= !jumping;
          // 不阻塞，取指
-         if(!stall) begin
+         if(!(|stall)) begin
             f_insn <= ibus_data;
             f_pc <= pc;
             pc <= pc + 4;
          end else begin
-            // don't fetch a new instruction when we can't complete the one in the D stage
+            stall <= stall - 1;
          end
 
          /* DECODE */
-         if(!stall) begin
+         if(!(|stall)) begin
             // 读取操作数
             if(dec_s1_is_imm) d_s1 <= dec_s1_imm;
             else              d_s1 <= |dec_rs1 ? regs[dec_rs1] : 0;
