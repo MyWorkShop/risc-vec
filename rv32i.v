@@ -117,7 +117,7 @@ module decoder(input [31:0]      insn,
    assign rs2 = insn[24:20];
    assign rs1 = insn[19:15];
    // 下行内容参考JAL、JALR以及分支跳转的注释
-   assign jump_target = (is_jump_reg ? (regs[rs1] + imm11j) : (pc - 4 + (is_branch ? imm12b : imm20j)));
+   assign jump_target = (is_jump_reg ? (regs[rs1] + imm11j) : (pc + (is_branch ? imm12b : imm20j)));
 
    always @ * begin
       rd_write_disable = 0;
@@ -355,6 +355,8 @@ module ezpipe (input         clk,
          cycle <= 0;
          instret <= 0;
          stall <=0;
+         jumping <=0;
+         d_is_jump <= 0;
       end else begin
          // 周期+1
          cycle <= cycle + 1;
@@ -364,7 +366,7 @@ module ezpipe (input         clk,
 
          /* FETCH */
          // 跳转则暂停执行指令
-         f_valid <= !jumping;
+         f_valid <= (!jumping) && (!d_is_jump) && (!dec_is_jump);
          // 不阻塞，取指
          if(!(|stall)) begin
             f_insn <= ibus_data;
