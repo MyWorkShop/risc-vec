@@ -171,6 +171,7 @@ module decoder(input [31:0]      insn,
            s1_imm = imm20;
            s1_is_imm = 1;
            s2_imm = pc;
+           s2_imm = 4;
            s2_is_imm = 1;
         end
         // jump an link 
@@ -185,6 +186,7 @@ module decoder(input [31:0]      insn,
            s1_is_imm = 1;
            s1_imm = pc;
            s2_is_imm = 1;
+           s2_imm = 4;
            is_jump = 1;
            is_jump_reg = 0;
         end
@@ -253,7 +255,7 @@ module ezpipe (input         clk,
    /* pipeline registers */
    // from FETCH to DECODE
    reg [31:0]                f_insn;       // 指令
-   reg [31:0]                f_pc;         // 程序计数器
+   reg [31:0]                f_pc;         // 给译码器读的pc
    reg                       f_valid;      // 是否取指
    // from DECODE to EXECUTE
    reg [31:0]                d_s1;
@@ -312,37 +314,10 @@ module ezpipe (input         clk,
    assign ibus_addr = pc;
 
    /* the actual pipeline */
-   reg                       jumping;
    reg [1:0]                 stall;
    always @ * begin
       // does the decoded instruction depend on a instruction in the d_* or e_* registers?
       // stall = 0;
-      // 如果读写（读:rs1/rs2，写:rd）冲突，则阻塞流水线执行
-      // 理论上来说，这是一个保险的策略，读写冲突的解决一般由编译器解决
-      // if(d_valid && |d_rd) begin
-      //    if(|dec_rs1 && !dec_s1_is_imm && dec_rs1==d_rd)
-      //      stall = 1;
-      //    if(|dec_rs2 && !dec_s2_is_imm && dec_rs2==d_rd)
-      //      stall = 1;
-      // end
-      // if(e_valid && |e_rd) begin
-      //    if(|dec_rs1 && !dec_s1_is_imm && dec_rs1==e_rd)
-      //      stall = 1;
-      //    if(|dec_rs2 && !dec_s2_is_imm && dec_rs2==e_rd)
-      //      stall = 1;
-      // end
-
-      // is there a taken branch/jump sitting in the e_* registers?
-      // 默认清空跳转标识符
-      jumping = 0;
-      // 处理跳转指令
-      if(e_valid)
-        if(e_is_jump) begin
-           if(e_is_branch)
-             jumping = e_d[0];
-           else
-             jumping = 1;
-        end
    end
 
    always @(posedge clk) begin
@@ -355,46 +330,56 @@ module ezpipe (input         clk,
          cycle <= 0;
          instret <= 0;
          stall <=0;
-         jumping <=0;
          d_is_jump <= 0;
       end else begin
          // 周期+1
          cycle <= cycle + 1;
 
          // 它这里实现了四级流水线
-         // 取指、译码、执行、回写 
+         // 取指、译码、执行、写存 
 
          /* FETCH */
-         // 跳转则暂停执行指令
-         f_valid <= (!jumping) && (!d_is_jump) && (!dec_is_jump);
          // 不阻塞，取指
          if(!(|stall)) begin
-            f_insn <= ibus_data;
-            f_pc <= pc;
-            pc <= pc + 4;
+            if(dec_is_jump) begin
+               if(dec_is_branch) 
+                  stall = 1;
+               else
+                  pc = dec_jump_target;
+            end else if(d_is_jump && d_is_branch && alu_d[0]) begin
+               pc = e_jump_target;
+            end
+               f_valid <= !(|stall);
+               f_insn <= ibus_data;
+               f_pc <= pc;
+               pc <= pc + 4;
          end else begin
             stall <= stall - 1;
+            f_valid <= 0;
+            f_insn <= 0;
+            f_pc <= 0;
          end
 
          /* DECODE */
-         if(!(|stall)) begin
             // 读取操作数
-            if(dec_s1_is_imm) d_s1 <= dec_s1_imm;
-            else              d_s1 <= |dec_rs1 ? regs[dec_rs1] : 0;
-            if(dec_s2_is_imm) d_s2 <= dec_s2_imm;
-            else              d_s2 <= |dec_rs2 ? regs[dec_rs2] : 0;
+            if(dec_s1_is_imm)       d_s1 <= dec_s1_imm;
+            else if (!(|dec_rs1))   d_s1 <= 0;
+            else if (dec_rs1==d_rd) d_s1 <= alu_d;
+            else if (dec_rs1==e_rd) d_s1 <= e_d;
+            else                    d_s1 <= regs[dec_rs1];
+            
+            if(dec_s2_is_imm)       d_s2 <= dec_s2_imm;
+            else if (!(|dec_rs2))   d_s2 <= 0;
+            else if (dec_rs2==d_rd) d_s2 <= alu_d;
+            else if (dec_rs2==e_rd) d_s2 <= e_d;
+            else                    d_s2 <= regs[dec_rs2];
             // 将译码结果传递至下一级
             d_rd <= dec_rd;
             d_op_alu <= dec_op_alu;
             d_jump_target <= dec_jump_target;
             d_is_branch <= dec_is_branch;
             d_is_jump <= dec_is_jump;
-            d_valid <= f_valid && !jumping;
-         end else begin
-            // can't issue this instruction yet; send a bubble down the pipeline
-            //读写冲突也会导致阻塞
-            d_valid <= 0;
-         end
+            d_valid <= f_valid;
 
          /* EXECUTE */
          // 获取alu执行结果
@@ -405,13 +390,10 @@ module ezpipe (input         clk,
          e_is_branch <= d_is_branch;
          e_jump_target <= d_jump_target;
          //在这里，跳转标识符阻塞后续所有指令执行
-         e_valid <= d_valid && !jumping;
+         e_valid <= d_valid;
 
          /* WRITE */
          if(e_valid) begin
-            // 跳转
-            if(jumping)
-              pc <= e_jump_target;
             // 写寄存器
             if(|e_rd)
               regs[e_rd] <= e_d;
