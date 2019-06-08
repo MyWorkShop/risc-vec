@@ -207,6 +207,7 @@ module decoder(input [31:0]      insn,
            is_jump = 1;
            is_branch = 1;
            rd_write_disable = 1;
+           is_jump_reg = 0;
            case(funct3)
              `FUNCT3_BEQ:  op_alu = `ALU_SEQ;
              `FUNCT3_BNE:  op_alu = `ALU_SNE;
@@ -235,8 +236,10 @@ endmodule
 // 核心逻辑
 module ezpipe (input         clk,
                input         reset,
-               output [31:0] ibus_addr,
-               input [31:0]  ibus_data
+               output [31:0] ibus_addr1,
+               input [31:0]  ibus_data1,
+               output [31:0] ibus_addr2,
+               input [31:0]  ibus_data2
                // output reg [31:0] dbus_addr,
                // output reg [31:0] dbus_data_wr,
                // input [31:0]      dbus_data_rd,
@@ -310,11 +313,13 @@ module ezpipe (input         clk,
            .operation(d_op_alu),
            .d(alu_d)
            );
+   
 
-   assign ibus_addr = pc;
+   assign ibus_addr1 = pc;
+   assign ibus_addr2 = dec_jump_target;
 
    /* the actual pipeline */
-   reg [1:0]                 stall;
+   reg                       jump_stall;
    always @ * begin
       // does the decoded instruction depend on a instruction in the d_* or e_* registers?
       // stall = 0;
@@ -329,7 +334,7 @@ module ezpipe (input         clk,
          e_valid <= 0;
          cycle <= 0;
          instret <= 0;
-         stall <=0;
+         jump_stall <=0;
          d_is_jump <= 0;
       end else begin
          // 周期+1
@@ -340,24 +345,36 @@ module ezpipe (input         clk,
 
          /* FETCH */
          // 不阻塞，取指
-         if(!(|stall)) begin
+         
+         if(!jump_stall) begin
             if(dec_is_jump) begin
-               if(dec_is_branch) 
-                  stall = 1;
-               else
-                  pc = dec_jump_target;
-            end else if(d_is_jump && d_is_branch && alu_d[0]) begin
-               pc = e_jump_target;
-            end
-               f_valid <= !(|stall);
-               f_insn <= ibus_data;
+               if(dec_is_branch) begin
+                  jump_stall = 1;
+               end else begin
+                  f_valid <= 1;
+                  f_insn <= ibus_data2;
+                  f_pc <= dec_jump_target;
+                  pc <= dec_jump_target + 4;
+               end
+            end else begin
+               f_valid <= 1;
+               f_insn <= ibus_data1;
                f_pc <= pc;
                pc <= pc + 4;
+            end 
          end else begin
-            stall <= stall - 1;
-            f_valid <= 0;
-            f_insn <= 0;
-            f_pc <= 0;
+            jump_stall <= 0;
+            if(d_is_jump && d_is_branch && alu_d[0]) begin
+               f_valid <= 1;
+               f_insn <= ibus_data2;
+               f_pc <= dec_jump_target;
+               pc <= dec_jump_target + 4;
+            end else begin
+               f_valid <= 1;
+               f_insn <= ibus_data1;
+               f_pc <= pc;
+               pc <= pc + 4;
+            end
          end
 
          /* DECODE */

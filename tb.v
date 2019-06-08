@@ -1,6 +1,8 @@
 module tb_rv_module();
-wire [31:0] address;
-wire [31:0] data;
+wire [31:0] address1;
+wire [31:0] data1;
+wire [31:0] address2;
+wire [31:0] data2;
 
 reg  clk;
 reg  reset;
@@ -21,12 +23,16 @@ always #1 clk <= ~clk;
 ezpipe ezpipe_inst(
         .clk(clk),
         .reset(reset),
-        .ibus_addr(address),
-        .ibus_data(data)
+        .ibus_addr1(address1),
+        .ibus_data1(data1),
+        .ibus_addr2(address2),
+        .ibus_data2(data2)
         );
 rom rom_inst(
-    .address(address),
-    .out(data),
+    .address1(address1),
+    .out1(data1),
+    .address2(address2),
+    .out2(data2),
     .clk(clk)
 );
 
@@ -34,7 +40,6 @@ initial
 begin
     $dumpfile("rv.vcd");
     $dumpvars(0, ezpipe_inst);
-    $dumpvars(1, rom_inst);
 end
 
 endmodule
