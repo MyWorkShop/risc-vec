@@ -22,6 +22,8 @@
 `define OPCODE_JALR   7'b1100111
 `define OPCODE_BRANCH 7'b1100011
 `define OPCODE_SYSTEM 7'b1110011
+`define OPCODE_LOAD   7'b0000011
+`define OPCODE_STORE  7'b0100011
 // funct3:指令[14:12]
 // 整数运算
 `define FUNCT3_ADD_SUB 3'b000
@@ -39,6 +41,12 @@
 `define FUNCT3_BGE  3'b101
 `define FUNCT3_BLTU 3'b110
 `define FUNCT3_BGEU 3'b111
+//加载/存储
+`define FUNCT3_B    3'b000
+`define FUNCT3_H    3'b001
+`define FUNCT3_W    3'b010
+`define FUNCT3_BU   3'b100
+`define FUNCT3_HU   3'b101
 // Timers and Counters
 `define SYSTEM_RDCYCLE    20'b11000000000000000010
 `define SYSTEM_RDCYCLEH   20'b11001000000000000010
@@ -88,7 +96,7 @@ module decoder(input [31:0]      insn,
                input [31:0]      pc,
                input [63:0]      cycle,
                input [63:0]      instret,
-               input [31:0]      regs [1:31],
+               input [31:0]      regs [0:31],
 
                output [4:0]      rd,
                output reg        s1_is_imm,
@@ -100,7 +108,11 @@ module decoder(input [31:0]      insn,
                output reg [3:0]  op_alu,
                output reg        is_jump,
                output reg        is_branch,
-               output [31:0]     jump_target
+               output reg [31:0] jump_target,
+               output reg [31:0] ls_target,
+               output reg        is_load,
+               output reg        is_store,
+               output reg [2:0]  ls_mode
                );
    wire [6:0]                    opcode = insn[ 6: 0];
    wire [2:0]                    funct3 = insn[14:12];
@@ -109,15 +121,17 @@ module decoder(input [31:0]      insn,
    wire [31:0]                   imm20  = {insn[31:12], 12'b0};
    wire [31:0]                   imm12b = {{20{insn[31]}}, insn[7], insn[30:25], insn[11:8], 1'b0};
    wire [31:0]                   imm20j = {{12{insn[31]}}, insn[19:12], insn[20], insn[30:21], 1'b0};
-   wire [31:0]                   imm11j = {{21{insn[31]}}, insn[30:20]};
+   wire [31:0]                   imm12s = {{21{insn[31]}}, insn[30:25], insn[11:7]};
+   reg  [31:0]                   r1;
    reg                           rd_write_disable;
    reg                           is_jump_reg;
 
    assign rd = rd_write_disable ? 0 : insn[11:7];
    assign rs2 = insn[24:20];
    assign rs1 = insn[19:15];
+   assign r1  = regs[rs1];
    // 下行内容参考JAL、JALR以及分支跳转的注释
-   assign jump_target = (is_jump_reg ? (regs[rs1] + imm11j) : (pc + (is_branch ? imm12b : imm20j)));
+   assign jump_target = (is_jump_reg ? (r1 + imm12) : (pc + (is_branch ? imm12b : imm20j)));
 
    always @ * begin
       rd_write_disable = 0;
@@ -127,6 +141,10 @@ module decoder(input [31:0]      insn,
       s2_is_imm = 0;
       is_jump = 0;
       is_branch = 0;
+      ls_target = 0;
+      is_load = 0;
+      is_store = 0;
+      ls_mode = 0;
       op_alu = `ALU_ADD;
       case(opcode)
         // 寄存器运算
@@ -171,7 +189,6 @@ module decoder(input [31:0]      insn,
            s1_imm = imm20;
            s1_is_imm = 1;
            s2_imm = pc;
-           s2_imm = 4;
            s2_is_imm = 1;
         end
         // jump an link 
@@ -199,6 +216,7 @@ module decoder(input [31:0]      insn,
            s1_is_imm = 1;
            s1_imm = pc;
            s2_is_imm = 1;
+           s2_imm = 4;
            is_jump = 1;
            is_jump_reg = 1;
         end
@@ -229,26 +247,38 @@ module decoder(input [31:0]      insn,
              `SYSTEM_RDINSTRET:  s1_imm = instret[31:0];
              `SYSTEM_RDINSTRETH: s1_imm = instret[63:32];
            endcase
-        end
+
+         end
+         `OPCODE_LOAD: begin
+            is_load = 1;
+            ls_mode = funct3;
+            ls_target = r1 + imm12;
+         end
+         `OPCODE_STORE: begin
+            is_store = 1;
+            ls_mode = funct3;
+            ls_target = r1 + imm12s;
+         end
       endcase
    end
 endmodule
 // 核心逻辑
-module ezpipe (input         clk,
-               input         reset,
-               output [31:0] ibus_addr1,
-               input [31:0]  ibus_data1,
-               output [31:0] ibus_addr2,
-               input [31:0]  ibus_data2
-               // output reg [31:0] dbus_addr,
-               // output reg [31:0] dbus_data_wr,
-               // input [31:0]      dbus_data_rd,
+module ezpipe (input             clk,
+               input             reset,
+               output [31:0]     ibus_addr1,
+               input [31:0]      ibus_data1,
+               output [31:0]     ibus_addr2,
+               input [31:0]      ibus_data2,
+               output reg [31:0] dbus_addr,
+               output reg [31:0] dbus_data_w,
+               input [31:0]      dbus_data_r,
                // input [31:0]      dbus_data_ready,
-               // output reg        dbus_rd,
-               // output reg        dbus_wr
+               output reg        dbus_write,
+               output reg        dbus_read,
+               output reg [2:0]  dbus_mode
                );
    /* registers and counters */
-   reg [31:0]                regs [1:31];
+   reg [31:0]                regs [0:31];
    reg [31:0]                pc;
    reg [63:0]                cycle;
    reg [63:0]                instret;
@@ -260,22 +290,16 @@ module ezpipe (input         clk,
    reg [31:0]                f_insn;       // 指令
    reg [31:0]                f_pc;         // 给译码器读的pc
    reg                       f_valid;      // 是否取指
+
    // from DECODE to EXECUTE
    reg [31:0]                d_s1;
    reg [31:0]                d_s2;
-   reg [3:0]                 d_op_alu;
    reg [4:0]                 d_rd;
+   reg                       d_valid;
    reg                       d_is_jump;
    reg                       d_is_branch;
-   reg [31:0]                d_jump_target;
-   reg                       d_valid;
-   // from EXECUTE to WRITE
-   reg [4:0]                 e_rd;
-   reg [31:0]                e_d;
-   reg                       e_is_jump;
-   reg                       e_is_branch;
-   reg [31:0]                e_jump_target;
-   reg                       e_valid;
+   reg                       d_is_load;
+   reg [3:0]                 d_op_alu;
 
    /* instances */
    wire [4:0]                dec_rd;
@@ -289,6 +313,10 @@ module ezpipe (input         clk,
    wire                      dec_is_jump;
    wire                      dec_is_branch;
    wire [31:0]               dec_jump_target;
+   wire [31:0]               dec_ls_target;
+   wire                      dec_is_load;
+   wire                      dec_is_store;
+   wire [2:0]                dec_ls_mode;
    decoder dec(.pc(f_pc),
                .insn(f_insn),
                .cycle(cycle),
@@ -304,7 +332,11 @@ module ezpipe (input         clk,
                .s2_imm(dec_s2_imm),
                .is_jump(dec_is_jump),
                .is_branch(dec_is_branch),
-               .jump_target(dec_jump_target)
+               .jump_target(dec_jump_target),
+               .ls_target(dec_ls_target),
+               .is_load(dec_is_load),
+               .is_store(dec_is_store),
+               .ls_mode(dec_ls_mode)
                );
 
    wire [31:0]               alu_d;
@@ -326,24 +358,27 @@ module ezpipe (input         clk,
    end
 
    always @(posedge clk) begin
+      regs[0] <= 0;
       // 重置  
       if(reset) begin
-         pc <= 0;
-         f_valid <= 0;
-         d_valid <= 0;
-         e_valid <= 0;
-         cycle <= 0;
-         instret <= 0;
-         jump_stall <=0;
-         d_is_jump <= 0;
+         pc         <= 0;
+         f_valid    <= 0;
+         d_valid    <= 0;
+         cycle      <= 0;
+         instret    <= 0;
+         jump_stall <= 0;
+         d_is_jump  <= 0;
+         d_is_branch<= 0;
+         d_is_load  <= 0;
       end else begin
+      
          // 周期+1
          cycle <= cycle + 1;
 
-         // 它这里实现了四级流水线
-         // 取指、译码、执行、写存 
+         // 取指、译码、写存 
 
          /* FETCH */
+
          // 不阻塞，取指
          
          if(!jump_stall) begin
@@ -352,68 +387,74 @@ module ezpipe (input         clk,
                   jump_stall = 1;
                end else begin
                   f_valid <= 1;
-                  f_insn <= ibus_data2;
-                  f_pc <= dec_jump_target;
-                  pc <= dec_jump_target + 4;
+                  f_insn  <= ibus_data2;
+                  f_pc    <= dec_jump_target;
+                  pc      <= dec_jump_target + 4;
                end
             end else begin
                f_valid <= 1;
-               f_insn <= ibus_data1;
-               f_pc <= pc;
-               pc <= pc + 4;
+               f_insn  <= ibus_data1;
+               f_pc    <= pc;
+               pc      <= pc + 4;
             end 
          end else begin
             jump_stall <= 0;
             if(d_is_jump && d_is_branch && alu_d[0]) begin
                f_valid <= 1;
-               f_insn <= ibus_data2;
-               f_pc <= dec_jump_target;
-               pc <= dec_jump_target + 4;
+               f_insn  <= ibus_data2;
+               f_pc    <= dec_jump_target;
+               pc      <= dec_jump_target + 4;
             end else begin
                f_valid <= 1;
-               f_insn <= ibus_data1;
-               f_pc <= pc;
-               pc <= pc + 4;
+               f_insn  <= ibus_data1;
+               f_pc    <= pc;
+               pc      <= pc + 4;
             end
          end
 
          /* DECODE */
-            // 读取操作数
+         if(d_is_load) begin
+
+         end else begin
+         // 读取操作数
             if(dec_s1_is_imm)       d_s1 <= dec_s1_imm;
             else if (!(|dec_rs1))   d_s1 <= 0;
-            else if (dec_rs1==d_rd) d_s1 <= alu_d;
-            else if (dec_rs1==e_rd) d_s1 <= e_d;
+            else if (dec_rs1==d_rd) d_s1 <= d_is_load ? dbus_data_r : alu_d;
             else                    d_s1 <= regs[dec_rs1];
             
             if(dec_s2_is_imm)       d_s2 <= dec_s2_imm;
             else if (!(|dec_rs2))   d_s2 <= 0;
-            else if (dec_rs2==d_rd) d_s2 <= alu_d;
-            else if (dec_rs2==e_rd) d_s2 <= e_d;
+            else if (dec_rs2==d_rd) d_s2 <= d_is_load ? dbus_data_r : alu_d;
             else                    d_s2 <= regs[dec_rs2];
-            // 将译码结果传递至下一级
-            d_rd <= dec_rd;
-            d_op_alu <= dec_op_alu;
-            d_jump_target <= dec_jump_target;
-            d_is_branch <= dec_is_branch;
-            d_is_jump <= dec_is_jump;
-            d_valid <= f_valid;
+         end
 
-         /* EXECUTE */
-         // 获取alu执行结果
-         e_d <= alu_d;
-         // 将译码结果继续传递至下一级
-         e_rd <= d_rd;
-         e_is_jump <= d_is_jump;
-         e_is_branch <= d_is_branch;
-         e_jump_target <= d_jump_target;
-         //在这里，跳转标识符阻塞后续所有指令执行
-         e_valid <= d_valid;
+         if(dec_is_load) begin
+            dbus_addr   <= dec_ls_target;
+            dbus_mode   <= dec_ls_mode;
+            dbus_read   <= 1;
+         end else
+            dbus_read   <= 0;
+         if(dec_is_store) begin
+            dbus_data_w <= regs[dec_rs2];
+            dbus_addr   <= dec_ls_target;
+            dbus_mode   <= dec_ls_mode;
+            dbus_write  <= 1;
+         end else
+            dbus_write  <= 0;
+
+         // 将译码结果传递至下一级
+         d_rd          <= dec_rd;
+         d_valid       <= f_valid;
+         d_is_jump     <= dec_is_jump;
+         d_is_branch   <= dec_is_branch;
+         d_is_load     <= dec_is_load;
+         d_op_alu      <= dec_op_alu;
 
          /* WRITE */
-         if(e_valid) begin
+         if(d_valid) begin
             // 写寄存器
-            if(|e_rd)
-              regs[e_rd] <= e_d;
+            if(|d_rd)
+               regs[d_rd] <= d_is_load ? dbus_data_r : alu_d;
             // 指令计数器+1
             instret <= instret + 1;
          end
