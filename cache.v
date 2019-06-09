@@ -22,15 +22,15 @@ module cache(input [31:0]      address,
     initial 
     $readmemh("rom.patt",mem);
 
-    always @ *
+    always @(posedge clk)
     begin
         if(is_read) begin
             case(mode)
-                `FUNCT3_B: read = {{25{mem[address][7]}}, mem[address][6:0]};
-                `FUNCT3_H: read = {{17{mem[address][7]}}, mem[address][6:0], mem[address + 1]};
-                `FUNCT3_W: read = {mem[address], mem[address + 1], mem[address + 2], mem[address + 3]};
-                `FUNCT3_BU: read = {{24{1'b0}}, mem[address]};
-                `FUNCT3_HU: read = {{16{1'b0}}, mem[address], mem[address + 1]};
+                `FUNCT3_B: read <= {{25{mem[address][7]}}, mem[address][6:0]};
+                `FUNCT3_H: read <= {{17{mem[address][7]}}, mem[address][6:0], mem[address + 1]};
+                `FUNCT3_W: read <= {mem[address], mem[address + 1], mem[address + 2], mem[address + 3]};
+                `FUNCT3_BU: read <= {{24{1'b0}}, mem[address]};
+                `FUNCT3_HU: read <= {{16{1'b0}}, mem[address], mem[address + 1]};
             endcase
         end else if(is_write) begin
             case(mode)
@@ -47,8 +47,8 @@ module cache(input [31:0]      address,
                     end
             endcase
         end
-        out1 = {mem[address1], mem[address1 + 1], mem[address1 + 2], mem[address1 + 3]};
-        out2 = {mem[address2], mem[address2 + 1], mem[address2 + 2], mem[address2 + 3]};
+        out1 <= {mem[address1], mem[address1 + 1], mem[address1 + 2], mem[address1 + 3]};
+        out2 <= {mem[address2], mem[address2 + 1], mem[address2 + 2], mem[address2 + 3]};
     end
 
 endmodule

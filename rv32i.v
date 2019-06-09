@@ -272,7 +272,7 @@ module ezpipe (input             clk,
                output reg [31:0] dbus_addr,
                output reg [31:0] dbus_data_w,
                input [31:0]      dbus_data_r,
-               // input [31:0]      dbus_data_ready,
+               input             dbus_is_ready,
                output reg        dbus_write,
                output reg        dbus_read,
                output reg [2:0]  dbus_mode
@@ -289,6 +289,7 @@ module ezpipe (input             clk,
    // from FETCH to DECODE
    reg [31:0]                f_insn;       // 指令
    reg [31:0]                f_pc;         // 给译码器读的pc
+   reg                       f_source;
    reg                       f_valid;      // 是否取指
 
    // from DECODE to EXECUTE
@@ -297,6 +298,7 @@ module ezpipe (input             clk,
    reg [4:0]                 d_rd;
    reg                       d_valid;
    reg                       d_is_jump;
+   reg [31:0]                d_jump_target;
    reg                       d_is_branch;
    reg                       d_is_load;
    reg [3:0]                 d_op_alu;
@@ -348,7 +350,8 @@ module ezpipe (input             clk,
    
 
    assign ibus_addr1 = pc;
-   assign ibus_addr2 = dec_jump_target;
+   assign ibus_addr2 = d_is_branch ? d_jump_target : dec_jump_target;
+   assign f_insn     = f_source ? ibus_data2 : ibus_data1;
 
    /* the actual pipeline */
    reg                       jump_stall;
@@ -367,6 +370,7 @@ module ezpipe (input             clk,
          cycle      <= 0;
          instret    <= 0;
          jump_stall <= 0;
+         f_source   <= 0;
          d_is_jump  <= 0;
          d_is_branch<= 0;
          d_is_load  <= 0;
@@ -385,30 +389,31 @@ module ezpipe (input             clk,
             if(dec_is_jump) begin
                if(dec_is_branch) begin
                   jump_stall = 1;
+                  f_valid   <= 0;
                end else begin
-                  f_valid <= 1;
-                  f_insn  <= ibus_data2;
-                  f_pc    <= dec_jump_target;
-                  pc      <= dec_jump_target + 4;
+                  f_valid  <= 1;
+                  f_source  = 1;
+                  f_pc     <= dec_jump_target;
+                  pc       <= dec_jump_target + 4;
                end
             end else begin
-               f_valid <= 1;
-               f_insn  <= ibus_data1;
-               f_pc    <= pc;
-               pc      <= pc + 4;
+               f_valid  <= 1;
+               f_source  = 0;
+               f_pc     <= pc;
+               pc       <= pc + 4;
             end 
          end else begin
             jump_stall <= 0;
             if(d_is_jump && d_is_branch && alu_d[0]) begin
-               f_valid <= 1;
-               f_insn  <= ibus_data2;
-               f_pc    <= dec_jump_target;
-               pc      <= dec_jump_target + 4;
+               f_valid  <= 1;
+               f_source  = 1;
+               f_pc     <= d_jump_target;
+               pc       <= d_jump_target + 4;
             end else begin
-               f_valid <= 1;
-               f_insn  <= ibus_data1;
-               f_pc    <= pc;
-               pc      <= pc + 4;
+               f_valid  <= 1;
+               f_source  = 0;
+               f_pc     <= pc;
+               pc       <= pc + 4;
             end
          end
 
@@ -446,6 +451,7 @@ module ezpipe (input             clk,
          d_rd          <= dec_rd;
          d_valid       <= f_valid;
          d_is_jump     <= dec_is_jump;
+         d_jump_target <= dec_jump_target;
          d_is_branch   <= dec_is_branch;
          d_is_load     <= dec_is_load;
          d_op_alu      <= dec_op_alu;
