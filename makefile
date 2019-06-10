@@ -14,4 +14,3 @@ mult: mult.v mult_tb.v
 rv: rv32i.v cache.v tb.v
 	iverilog -o rv_test -g2012 rv32i.v cache.v tb.v
 	vvp rv_test -lxt2
-	gtkwave rv.vcd

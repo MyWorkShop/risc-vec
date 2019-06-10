@@ -109,7 +109,6 @@ module decoder(input [31:0]      insn,
                output reg        is_jump,
                output reg        is_branch,
                output reg [31:0] jump_target,
-               output reg [31:0] ls_target,
                output reg        is_load,
                output reg        is_store,
                output reg [2:0]  ls_mode
@@ -129,7 +128,6 @@ module decoder(input [31:0]      insn,
    assign rd = rd_write_disable ? 0 : insn[11:7];
    assign rs2 = insn[24:20];
    assign rs1 = insn[19:15];
-   assign r1  = regs[rs1];
    // 下行内容参考JAL、JALR以及分支跳转的注释
    assign jump_target = (is_jump_reg ? (r1 + imm12) : (pc + (is_branch ? imm12b : imm20j)));
 
@@ -141,7 +139,6 @@ module decoder(input [31:0]      insn,
       s2_is_imm = 0;
       is_jump = 0;
       is_branch = 0;
-      ls_target = 0;
       is_load = 0;
       is_store = 0;
       ls_mode = 0;
@@ -252,12 +249,15 @@ module decoder(input [31:0]      insn,
          `OPCODE_LOAD: begin
             is_load = 1;
             ls_mode = funct3;
-            ls_target = r1 + imm12;
+            s2_is_imm = 1;
+            s2_imm = imm12;
          end
          `OPCODE_STORE: begin
             is_store = 1;
             ls_mode = funct3;
-            ls_target = r1 + imm12s;
+            s2_is_imm = 1;
+            s2_imm = imm12s;
+            rd_write_disable = 1;
          end
       endcase
    end
@@ -267,15 +267,16 @@ module ezpipe (input             clk,
                input             reset,
                output [31:0]     ibus_addr1,
                input [31:0]      ibus_data1,
+               output reg        ibus_enable_2,
                output [31:0]     ibus_addr2,
                input [31:0]      ibus_data2,
-               output reg [31:0] dbus_addr,
+               output [31:0]     dbus_addr,
                output reg [31:0] dbus_data_w,
                input [31:0]      dbus_data_r,
                input             dbus_is_ready,
-               output reg        dbus_write,
-               output reg        dbus_read,
-               output reg [2:0]  dbus_mode
+               output            dbus_write,
+               output            dbus_read,
+               output [2:0]      dbus_mode
                );
    /* registers and counters */
    reg [31:0]                regs [0:31];
@@ -299,9 +300,26 @@ module ezpipe (input             clk,
    reg                       d_valid;
    reg                       d_is_jump;
    reg [31:0]                d_jump_target;
+   reg [31:0]                d_rs2;
    reg                       d_is_branch;
    reg                       d_is_load;
+   reg                       d_is_store;
+   reg                       d_is_ls;
    reg [3:0]                 d_op_alu;
+
+   // from EXECUTE to MEMORY
+   reg [4:0]                 e_rd;
+   reg                       e_valid;
+   reg [31:0]                e_ls_target;
+   reg                       e_is_load;
+   reg                       e_is_store;
+   reg [31:0]                e_d;
+
+   // from MEMORY to MEMORY
+   reg [4:0]                 m_rd;
+   reg                       m_valid;
+   reg                       m_is_load;
+   reg [31:0]                m_d;
 
    /* instances */
    wire [4:0]                dec_rd;
@@ -315,7 +333,6 @@ module ezpipe (input             clk,
    wire                      dec_is_jump;
    wire                      dec_is_branch;
    wire [31:0]               dec_jump_target;
-   wire [31:0]               dec_ls_target;
    wire                      dec_is_load;
    wire                      dec_is_store;
    wire [2:0]                dec_ls_mode;
@@ -335,7 +352,6 @@ module ezpipe (input             clk,
                .is_jump(dec_is_jump),
                .is_branch(dec_is_branch),
                .jump_target(dec_jump_target),
-               .ls_target(dec_ls_target),
                .is_load(dec_is_load),
                .is_store(dec_is_store),
                .ls_mode(dec_ls_mode)
@@ -349,9 +365,14 @@ module ezpipe (input             clk,
            );
    
 
-   assign ibus_addr1 = pc;
-   assign ibus_addr2 = d_is_branch ? d_jump_target : dec_jump_target;
-   assign f_insn     = f_source ? ibus_data2 : ibus_data1;
+   assign ibus_addr1    = pc;
+   assign ibus_enable_2 = dec_is_jump;
+   assign ibus_addr2    = d_is_branch ? d_jump_target : dec_jump_target;
+   assign dbus_addr     = e_ls_target;
+   assign dbus_mode     = dec_ls_mode;
+   assign dbus_read     = e_is_load && e_valid;
+   assign dbus_write    = e_is_store && e_valid;
+   assign f_insn        = f_source ? ibus_data2 : ibus_data1;
 
    /* the actual pipeline */
    reg                       jump_stall;
@@ -374,12 +395,13 @@ module ezpipe (input             clk,
          d_is_jump  <= 0;
          d_is_branch<= 0;
          d_is_load  <= 0;
+         d_is_store  <= 0;
       end else begin
       
          // 周期+1
          cycle <= cycle + 1;
 
-         // 取指、译码、写存 
+         // 取指、译码、执行、访存、回写
 
          /* FETCH */
 
@@ -418,49 +440,73 @@ module ezpipe (input             clk,
          end
 
          /* DECODE */
-         if(d_is_load) begin
-
-         end else begin
+         if(f_valid)begin
          // 读取操作数
-            if(dec_s1_is_imm)       d_s1 <= dec_s1_imm;
-            else if (!(|dec_rs1))   d_s1 <= 0;
-            else if (dec_rs1==d_rd) d_s1 <= d_is_load ? dbus_data_r : alu_d;
-            else                    d_s1 <= regs[dec_rs1];
+            if(dec_s1_is_imm)         d_s1 <= dec_s1_imm;
+            else if (!(|dec_rs1))     d_s1 <= 0;
+            else if ((dec_rs1 == d_rd)&&(!d_is_ls))
+                                      d_s1 <= alu_d;
+            else if ((dec_rs1 == e_rd)&&(!e_is_load)&&(!d_is_store)) 
+                                      d_s1 <= e_d;
+            else if (dec_rs1 == m_rd) d_s1 <= m_is_load? dbus_data_r : m_d;
+            else                      d_s1 <= regs[dec_rs1];
             
-            if(dec_s2_is_imm)       d_s2 <= dec_s2_imm;
-            else if (!(|dec_rs2))   d_s2 <= 0;
-            else if (dec_rs2==d_rd) d_s2 <= d_is_load ? dbus_data_r : alu_d;
-            else                    d_s2 <= regs[dec_rs2];
-         end
-
-         if(dec_is_load) begin
-            dbus_addr   <= dec_ls_target;
-            dbus_mode   <= dec_ls_mode;
-            dbus_read   <= 1;
-         end else
-            dbus_read   <= 0;
-         if(dec_is_store) begin
-            dbus_data_w <= regs[dec_rs2];
-            dbus_addr   <= dec_ls_target;
-            dbus_mode   <= dec_ls_mode;
-            dbus_write  <= 1;
-         end else
-            dbus_write  <= 0;
+            if(dec_s2_is_imm)         d_s2 <= dec_s2_imm;
+            else if (!(|dec_rs2))     d_s2 <= 0;
+            else if ((dec_rs2 == d_rd)&&(!d_is_ls))
+                                      d_s2 <= alu_d;
+            else if ((dec_rs2 == e_rd)&&(!e_is_load)&&(!d_is_store)) 
+                                      d_s2 <= e_d;
+            else if (dec_rs2 == m_rd) d_s2 <= m_is_load? dbus_data_r : m_d;
+            else                      d_s2 <= regs[dec_rs2];
+            
 
          // 将译码结果传递至下一级
-         d_rd          <= dec_rd;
+            d_rd          <= dec_rd;
+            d_rs2         <= dec_rs2;
+            d_is_jump     <= dec_is_jump;
+            d_jump_target <= dec_jump_target;
+            d_is_branch   <= dec_is_branch;
+            d_is_load     <= dec_is_load;
+            d_is_store    <= dec_is_store;
+            d_is_ls       <= dec_is_load || dec_is_store;
+            d_op_alu      <= dec_op_alu;
+         end
          d_valid       <= f_valid;
-         d_is_jump     <= dec_is_jump;
-         d_jump_target <= dec_jump_target;
-         d_is_branch   <= dec_is_branch;
-         d_is_load     <= dec_is_load;
-         d_op_alu      <= dec_op_alu;
 
-         /* WRITE */
+         /* EXECUTE */
          if(d_valid) begin
+            if(d_is_ls)
+               e_ls_target <= alu_d;
+            else
+               e_d <= alu_d;
+            if(d_is_store) begin
+               if (!(|d_rs2))                          dbus_data_w <= 0;
+               else if ((d_rs2 == d_rd)&&(!d_is_ls))   dbus_data_w <= alu_d;
+               else if ((d_rs2 == e_rd)&&(!e_is_load)&&(!d_is_store)) 
+                                                       dbus_data_w <= e_d;
+               else if (d_rs2 == m_rd)                 dbus_data_w <= m_is_load? dbus_data_r : m_d;
+               else                                    dbus_data_w <= regs[d_rs2];
+            end
+            e_is_load <= d_is_load;
+            e_is_store <= d_is_store;
+            e_rd <= d_rd;
+         end
+         e_valid <= d_valid;
+         
+         /* MEMORY */
+         if(e_valid) begin
+            m_d <= e_d;
+            m_rd <= e_rd;
+            m_is_load <= e_is_load;
+         end
+         m_valid <= e_valid;
+         
+         /* WRITE */
+         if(m_valid) begin
             // 写寄存器
-            if(|d_rd)
-               regs[d_rd] <= d_is_load ? dbus_data_r : alu_d;
+            if(|m_rd)
+               regs[m_rd] <= m_is_load? dbus_data_r : m_d;
             // 指令计数器+1
             instret <= instret + 1;
          end

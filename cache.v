@@ -13,11 +13,12 @@ module cache(input [31:0]      address,
              input [2:0]       mode,
              input [31:0]      address1,
              output reg [31:0] out1,
+             input             enable_2,
              input [31:0]      address2,
              output reg [31:0] out2,
              input             clk);
 
-    reg [7:0] mem [1023:0];
+    reg [7:0] mem [65535:0];
     
     initial 
     $readmemh("rom.patt",mem);
@@ -32,7 +33,8 @@ module cache(input [31:0]      address,
                 `FUNCT3_BU: read <= {{24{1'b0}}, mem[address]};
                 `FUNCT3_HU: read <= {{16{1'b0}}, mem[address], mem[address + 1]};
             endcase
-        end else if(is_write) begin
+        end 
+        if(is_write) begin
             case(mode)
                 `FUNCT3_B: mem[address] <= write[7:0];
                 `FUNCT3_H: begin
@@ -48,7 +50,8 @@ module cache(input [31:0]      address,
             endcase
         end
         out1 <= {mem[address1], mem[address1 + 1], mem[address1 + 2], mem[address1 + 3]};
-        out2 <= {mem[address2], mem[address2 + 1], mem[address2 + 2], mem[address2 + 3]};
+        if(enable_2)
+            out2 <= {mem[address2], mem[address2 + 1], mem[address2 + 2], mem[address2 + 3]};
     end
 
 endmodule

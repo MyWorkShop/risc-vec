@@ -1,6 +1,7 @@
 module tb_rv_module();
 wire [31:0] address1;
 wire [31:0] data1;
+wire enable_2;
 wire [31:0] address2;
 wire [31:0] data2;
 wire [31:0] address_ls;
@@ -31,6 +32,7 @@ ezpipe ezpipe_inst(
         .reset(reset),
         .ibus_addr1(address1),
         .ibus_data1(data1),
+        .ibus_enable_2(enable_2),
         .ibus_addr2(address2),
         .ibus_data2(data2),
         .dbus_addr(address_ls),
@@ -49,6 +51,7 @@ cache cache_inst(
     .mode(mode),
     .address1(address1),
     .out1(data1),
+    .enable_2(enable_2),
     .address2(address2),
     .out2(data2),
     .clk(clk)
